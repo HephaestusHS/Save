@@ -57,7 +57,7 @@ namespace Heph.Unity.Save
     {
         protected string Path { get; }
         protected string Extension { get; }
-        protected List<SaveField> Fields { get; }
+        protected List<SaveField> SaveFields { get; }
         public GameSaveSettings Settings { get; }
         public GameSave(string path) : this(path, new GameSaveSettings()) { }
         public GameSave(string path, GameSaveSettings settings)
@@ -78,7 +78,7 @@ namespace Heph.Unity.Save
             {
                 Extension = path[extensionStartIndex..];
             }
-            Fields = new List<SaveField>();
+            SaveFields = new List<SaveField>();
             if (!Settings.Overwrite && File.Exists(Path))
             {
                 Load();
@@ -86,88 +86,91 @@ namespace Heph.Unity.Save
         }
         public virtual SaveField this[int index] => GetField(index);
         public virtual object this[string name] => GetObject(name);
-        public virtual SaveField GetField(int index) => new SaveField(Fields[index].Name, Fields[index].SaveObject);
+        public virtual SaveField GetField(int index) => new SaveField(SaveFields[index].Name, SaveFields[index].SaveObject);
         public virtual object GetObject(string name) => GetObject<object>(name);
         public virtual T GetObject<T>(string name) => (T)GetFieldByName(name, out _)?.SaveObject ?? default;
-        public virtual IEnumerable<SaveField> GetAllFields()
+        public virtual IEnumerable<SaveField> GetAllSaveFields()
         {
-            foreach (SaveField field in Fields)
+            foreach (SaveField saveField in SaveFields)
             {
-                yield return new SaveField(field.Name, field.SaveObject);
+                yield return new SaveField(saveField.Name, saveField.SaveObject);
             }
         }
         public virtual IEnumerable<object> GetAllObjects() => GetAllObjects<object>();
         public virtual IEnumerable<T> GetAllObjects<T>()
         {
-            foreach (SaveField field in Fields)
+            foreach (SaveField saveField in SaveFields)
             {
-                yield return (T)field.SaveObject;
+                if (saveField.SaveObject is T saveObject)
+                {
+                    yield return saveObject;
+                }
             }
         }
         public virtual void Append(object saveObject, string name) => Append(new SaveField(name, saveObject));
-        public virtual void Append(SaveField field)
+        public virtual void Append(SaveField saveField)
         {
-            if (!Settings.AllowSameNameSaveFields && GetFieldByName(field.Name, out _) != null)
+            if (!Settings.AllowSameNameSaveFields && GetFieldByName(saveField.Name, out _) != null)
             {
-                throw new ArgumentException($"A field with the name '{field.Name}' already exists.");
+                throw new ArgumentException($"A save field with the name '{saveField.Name}' already exists.");
             }
             else
             {
-                Fields.Add(field);
+                SaveFields.Add(saveField);
             }
         }
         public virtual void Prepend(object saveObject, string name) => Prepend(new SaveField(name, saveObject));
-        public virtual void Prepend(SaveField field)
+        public virtual void Prepend(SaveField saveField)
         {
-            if (!Settings.AllowSameNameSaveFields && GetFieldByName(field.Name, out _) != null)
+            if (!Settings.AllowSameNameSaveFields && GetFieldByName(saveField.Name, out _) != null)
             {
-                throw new ArgumentException($"A field with the name '{field.Name}' already exists.");
+                throw new ArgumentException($"A save field with the name '{saveField.Name}' already exists.");
             }
             else
             {
-                Fields.Insert(0, field);
+                SaveFields.Insert(0, saveField);
             }
         }
         public virtual void Insert(object saveObject, string name, int index) => Insert(new SaveField(name, saveObject), index);
-        public virtual void Insert(SaveField field, int index)
+        public virtual void Insert(SaveField saveField, int index)
         {
-            if (!Settings.AllowSameNameSaveFields && GetFieldByName(field.Name, out _) != null)
+            if (!Settings.AllowSameNameSaveFields && GetFieldByName(saveField.Name, out _) != null)
             {
-                throw new ArgumentException($"A field with the name '{field.Name}' already exists.");
+                throw new ArgumentException($"A save field with the name '{saveField.Name}' already exists.");
             }
             else
             {
-                Fields.Insert(index, field);
+                SaveFields.Insert(index, saveField);
             }
         }
-        public virtual void Remove(int index) => Fields.Remove(Fields[index]);
+        public virtual void Remove(int index) => SaveFields.Remove(SaveFields[index]);
         public virtual void Remove(object saveObject) => Remove(new SaveField(null, saveObject));
         public virtual void Remove(string name) => Remove(new SaveField(name, null));
-        public virtual void Remove(SaveField field)
+        public virtual void Remove(SaveField saveField)
         {
-            if (GetFieldBySaveable(field.SaveObject, out int index) != null)
+            if (GetFieldBySaveable(saveField.SaveObject, out int index) != null)
             {
                 Remove(index);
             }
-            else if (GetFieldByName(field.Name, out index) != null)
+            else if (GetFieldByName(saveField.Name, out index) != null)
             {
                 Remove(index);
             }
         }
         public virtual void Modify(object saveObject, string name) => Modify(new SaveField(name, saveObject));
-        public virtual void Modify(object saveObject, int index) => Fields[index].SaveObject = saveObject;
-        public virtual void Modify(SaveField field)
+        public virtual void Modify(object saveObject, int index) => SaveFields[index].SaveObject = saveObject;
+        public virtual void Modify(SaveField saveField)
         {
-            if (GetFieldByName(field.Name, out int index) != null)
+            if (GetFieldByName(saveField.Name, out int index) != null)
             {
-                Modify(field.SaveObject, index);
+                Modify(saveField.SaveObject, index);
             }
             else
             {
-                Append(field);
+                Append(saveField);
             }
         }
-        public virtual void Clear() => Fields.Clear();
+        public virtual void Clear() => SaveFields.Clear();
         public virtual void SaveChanges()
         {
             switch (Extension)
@@ -190,13 +193,13 @@ namespace Heph.Unity.Save
             index = -1;
             if (saveObject != null)
             {
-                for (int i = 0; i < Fields.Count; i++)
+                for (int i = 0; i < SaveFields.Count; i++)
                 {
-                    SaveField field = Fields[i];
-                    if (field.SaveObject == saveObject)
+                    SaveField saveField = SaveFields[i];
+                    if (saveField.SaveObject == saveObject)
                     {
                         index = i;
-                        return field;
+                        return saveField;
                     }
                 }
             }
@@ -207,13 +210,13 @@ namespace Heph.Unity.Save
             index = -1;
             if (name != null)
             {
-                for (int i = 0; i < Fields.Count; i++)
+                for (int i = 0; i < SaveFields.Count; i++)
                 {
-                    SaveField field = Fields[i];
-                    if (field.Name == name)
+                    SaveField saveField = SaveFields[i];
+                    if (saveField.Name == name)
                     {
                         index = i;
-                        return field;
+                        return saveField;
                     }
                 }
             }
@@ -225,18 +228,18 @@ namespace Heph.Unity.Save
             {
                 using (BinaryWriter binaryWriter = new BinaryWriter(fileStream, Settings.Encoding))
                 {
-                    foreach (SaveField field in Fields)
+                    foreach (SaveField saveField in SaveFields)
                     {
-                        WriteObject(field.SaveObject, field.Name, 0u);
+                        WriteObject(saveField.SaveObject, saveField.Name, 0u);
                     }
                     void WriteObject(object obj, string name, uint i)
                     {
                         Type objectType = obj.GetType();
-                        if (i == 0) // obj is the field object
+                        if (i == 0) // obj is the saveField object
                         {
                             binaryWriter.Write($"[{objectType.FullName} {name}]");
                         }
-                        else // obj is a property of the field object
+                        else // obj is a property of the saveField object
                         {
                             if (name == null)
                             {
@@ -301,9 +304,9 @@ namespace Heph.Unity.Save
                 using (XmlWriter xmlWriter = XmlWriter.Create(fileStream, xmlWriterSettings))
                 {
                     xmlWriter.WriteStartElement("root");
-                    foreach (SaveField field in Fields)
+                    foreach (SaveField saveField in SaveFields)
                     {
-                        WriteObject(field.SaveObject, field.Name, 0u);
+                        WriteObject(saveField.SaveObject, saveField.Name, 0u);
                     }
                     xmlWriter.WriteEndElement();
                     void WriteObject(object obj, string name, uint i)
@@ -374,7 +377,7 @@ namespace Heph.Unity.Save
                         }
                         jsonWriter.Formatting = Newtonsoft.Json.Formatting.Indented;
                         jsonWriter.WriteStartObject();
-                        foreach (SaveField saveField in Fields)
+                        foreach (SaveField saveField in SaveFields)
                         {
                             WriteObject(saveField.SaveObject, saveField.Name, 0u);
                         }
@@ -464,7 +467,7 @@ namespace Heph.Unity.Save
                                 name += " " + s;
                             }
                         }
-                        Fields.Add(new SaveField(name, LoadObject(Type.GetType(objectValues[0]), 0u)));
+                        SaveFields.Add(new SaveField(name, LoadObject(Type.GetType(objectValues[0]), 0u)));
                     }
                     object LoadObject(Type objectType, uint i)
                     {
@@ -526,7 +529,7 @@ namespace Heph.Unity.Save
             XElement root = xmlFile.Element("root");
             foreach (XElement obj in root.Elements("object"))
             {
-                Fields.Add(new SaveField(obj.Attribute("name").Value, LoadObject(obj, 0u)));
+                SaveFields.Add(new SaveField(obj.Attribute("name").Value, LoadObject(obj, 0u)));
             }
             object LoadObject(XElement objectElement, uint i)
             {
@@ -578,25 +581,25 @@ namespace Heph.Unity.Save
                 {
                     using (JsonReader jsonReader = new JsonTextReader(streamReader))
                     {
-                        SaveField field = new SaveField(null, null);
+                        SaveField saveField = new SaveField(null, null);
                         while (jsonReader.Read())
                         {
                             string value = jsonReader.Value as string;
-                            if (jsonReader.TokenType == JsonToken.PropertyName && field.Name == null)
+                            if (jsonReader.TokenType == JsonToken.PropertyName && saveField.Name == null)
                             {
-                                field.Name = value;
+                                saveField.Name = value;
                             }
-                            if (jsonReader.TokenType == JsonToken.StartObject && field.Name != null)
+                            if (jsonReader.TokenType == JsonToken.StartObject && saveField.Name != null)
                             {
-                                field.SaveObject = LoadObject(0u);
+                                saveField.SaveObject = LoadObject(0u);
                             }
                             if (jsonReader.TokenType == JsonToken.EndObject)
                             {
-                                if (field.SaveObject != null)
+                                if (saveField.SaveObject != null)
                                 {
-                                    Fields.Add(field);
+                                    SaveFields.Add(saveField);
                                 }
-                                field = new SaveField(null, null);
+                                saveField = new SaveField(null, null);
                             }
                         }
                         object LoadObject(uint i)
