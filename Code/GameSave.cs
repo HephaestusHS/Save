@@ -37,6 +37,8 @@ namespace Heph.Unity.Save
         public uint Depth { get; set; }
         public bool Overwrite { get; set; }
         public bool AllowSameNameSaveFields { get; set; }
+        public bool SaveFields { get; set; }
+        public bool IncludeInheritedFields { get; set; }
         public bool IncludeInheritedProperties { get; set; }
         public bool PrependPersistentDataPath { get; set; }
         public bool Indent { get; set; }
@@ -47,6 +49,8 @@ namespace Heph.Unity.Save
             Depth = 2u;
             Overwrite = false;
             AllowSameNameSaveFields = false;
+            SaveFields = false;
+            IncludeInheritedFields = false;
             IncludeInheritedProperties = false;
             PrependPersistentDataPath = true;
             Indent = true;
@@ -232,7 +236,7 @@ namespace Heph.Unity.Save
                     {
                         WriteObject(saveField.SaveObject, saveField.Name, 0u);
                     }
-                    void WriteObject(object obj, string name, uint i)
+                    void WriteObject(object obj, string name, uint i, bool isField = false)
                     {
                         Type objectType = obj.GetType();
                         if (i == 0) // obj is the saveField object
@@ -241,13 +245,20 @@ namespace Heph.Unity.Save
                         }
                         else // obj is a property of the saveField object
                         {
-                            if (name == null)
+                            if (name == null) // list object
                             {
                                 binaryWriter.Write($"<[{objectType.FullName}]>");
                             }
                             else
                             {
-                                binaryWriter.Write($"<[{name} {objectType.FullName}]>");
+                                if (isField)
+                                {
+                                    binaryWriter.Write($"<[({name})]>");
+                                }
+                                else
+                                {
+                                    binaryWriter.Write($"<[{name}]>");
+                                }
                             }
                         }
                         if (objectType.IsList())
@@ -279,6 +290,21 @@ namespace Heph.Unity.Save
                                 else if (Settings.CheckDepth(i))
                                 {
                                     WriteObject(propertyInfo.GetValue(obj), propertyInfo.GetSaveableName(), i + 1u);
+                                }
+                            }
+                            if (Settings.SaveFields)
+                            {
+                                foreach (FieldInfo fieldInfo in objectType.GetSaveableFields(Settings.IncludeInheritedFields))
+                                {
+                                    if (fieldInfo.IsPrimitive())
+                                    {
+                                        binaryWriter.Write($"<({fieldInfo.GetSaveableName()})>");
+                                        binaryWriter.Write(fieldInfo.GetValue(obj).ToString());
+                                    }
+                                    else if (Settings.CheckDepth(i))
+                                    {
+                                        WriteObject(fieldInfo.GetValue(obj), fieldInfo.GetSaveableName(), i + 1u, true);
+                                    }
                                 }
                             }
                         }
@@ -353,6 +379,23 @@ namespace Heph.Unity.Save
                                 }
                                 xmlWriter.WriteEndElement();
                             }
+                            if (Settings.SaveFields)
+                            {
+                                foreach (FieldInfo fieldInfo in objectType.GetSaveableFields(Settings.IncludeInheritedFields))
+                                {
+                                    xmlWriter.WriteStartElement("field");
+                                    xmlWriter.WriteAttributeString("name", fieldInfo.GetSaveableName());
+                                    if (fieldInfo.IsPrimitive())
+                                    {
+                                        xmlWriter.WriteValue(fieldInfo.GetValue(obj).ToString());
+                                    }
+                                    else if (Settings.CheckDepth(i))
+                                    {
+                                        WriteObject(fieldInfo.GetValue(obj), null, i + 1u);
+                                    }
+                                    xmlWriter.WriteEndElement();
+                                }
+                            }
                         }
                         xmlWriter.WriteEndElement();
                     }
@@ -426,6 +469,21 @@ namespace Heph.Unity.Save
                                         WriteObject(propertyInfo.GetValue(obj), propertyInfo.GetSaveableName(), i + 1u);
                                     }
                                 }
+                                if (Settings.SaveFields)
+                                {
+                                    foreach (FieldInfo fieldInfo in objectType.GetSaveableFields(Settings.IncludeInheritedFields))
+                                    {
+                                        if (fieldInfo.IsPrimitive())
+                                        {
+                                            jsonWriter.WritePropertyName($"({fieldInfo.GetSaveableName()})");
+                                            jsonWriter.WriteValue(fieldInfo.GetValue(obj).ToString());
+                                        }
+                                        else if (Settings.CheckDepth(i))
+                                        {
+                                            WriteObject(fieldInfo.GetValue(obj), $"({fieldInfo.GetSaveableName()})", i + 1u);
+                                        }
+                                    }
+                                }
                                 jsonWriter.WriteEndObject();
                             }
                         }
@@ -472,7 +530,7 @@ namespace Heph.Unity.Save
                     object LoadObject(Type objectType, uint i)
                     {
                         object obj = Activator.CreateInstance(objectType);
-                        string propertyName = null;
+                        string memberName = null;
                         while (true)
                         {
                             string value = binaryReader.ReadString();
@@ -493,14 +551,24 @@ namespace Heph.Unity.Save
                                         }
                                         else
                                         {
-                                            int typeStart = value.IndexOf(' ');
-                                            objectType.GetSaveableProperty(value[2..typeStart], Settings.IncludeInheritedProperties).SetValue(obj, LoadObject(Type.GetType(value[typeStart..^2]), i + 1u));
+                                            memberName = value[2..^2];
+                                            if (memberName[0] == '(' && memberName[^1] == ')')
+                                            {
+                                                FieldInfo fieldInfo = objectType.GetSaveableField(memberName[1..^1], Settings.IncludeInheritedFields);
+                                                fieldInfo.SetValue(obj, LoadObject(fieldInfo.FieldType, i + 1u));
+                                            }
+                                            else
+                                            {
+                                                PropertyInfo propertyInfo = objectType.GetSaveableProperty(memberName, Settings.IncludeInheritedProperties);
+                                                propertyInfo.SetValue(obj, LoadObject(propertyInfo.PropertyType, i + 1u));
+                                            }
+                                            memberName = null;
                                         }
                                     }
                                 }
                                 else
                                 {
-                                    propertyName = value[1..^1];
+                                    memberName = value[1..^1];
                                 }
                             }
                             else // value
@@ -508,13 +576,21 @@ namespace Heph.Unity.Save
                                 if (objectType.IsList())
                                 {
                                     IList list = (IList)obj;
-                                    list.Add(Convert.ChangeType(value, Type.GetType(propertyName)));
+                                    list.Add(Convert.ChangeType(value, Type.GetType(memberName)));
                                 }
-                                else if (propertyName != null)
+                                else if (memberName != null)
                                 {
-                                    PropertyInfo propertyInfo = objectType.GetSaveableProperty(propertyName, Settings.IncludeInheritedProperties);
-                                    propertyInfo.SetValue(obj, Convert.ChangeType(value, propertyInfo.PropertyType));
-                                    propertyName = null;
+                                    if (memberName[0] == '(' && memberName[^1] == ')')
+                                    {
+                                        FieldInfo fieldInfo = objectType.GetSaveableField(memberName[1..^1], Settings.IncludeInheritedFields);
+                                        fieldInfo.SetValue(obj, Convert.ChangeType(value, fieldInfo.FieldType));
+                                    }
+                                    else
+                                    {
+                                        PropertyInfo propertyInfo = objectType.GetSaveableProperty(memberName, Settings.IncludeInheritedProperties);
+                                        propertyInfo.SetValue(obj, Convert.ChangeType(value, propertyInfo.PropertyType));
+                                    }
+                                    memberName = null;
                                 }
                             }
                         }
@@ -569,6 +645,19 @@ namespace Heph.Unity.Save
                             propertyInfo.SetValue(obj, Convert.ChangeType(property.Value, propertyInfo.PropertyType));
                         }
                     }
+                    foreach (XElement property in objectElement.Elements("field"))
+                    {
+                        XElement innerObject = property.Element("object");
+                        FieldInfo fieldInfo = objectType.GetSaveableField(property.Attribute("name").Value, Settings.IncludeInheritedFields);
+                        if (innerObject != null && Settings.CheckDepth(i))
+                        {
+                            fieldInfo.SetValue(obj, LoadObject(innerObject, i + 1u));
+                        }
+                        else
+                        {
+                            fieldInfo.SetValue(obj, Convert.ChangeType(property.Value, fieldInfo.FieldType));
+                        }
+                    }
                 }
                 return obj;
             }
@@ -619,8 +708,16 @@ namespace Heph.Unity.Save
                                     }
                                     else
                                     {
-                                        PropertyInfo propertyInfo = currentObjectType.GetSaveableProperty(lastValue, Settings.IncludeInheritedProperties);
-                                        propertyInfo.SetValue(currentObject, LoadObject(i + 1u));
+                                        if (lastValue[0] == '(' && lastValue[^1] == ')') // field
+                                        {
+                                            FieldInfo fieldInfo = currentObjectType.GetSaveableField(lastValue[1..^1], Settings.IncludeInheritedFields);
+                                            fieldInfo.SetValue(currentObject, LoadObject(i + 1u));
+                                        }
+                                        else
+                                        {
+                                            PropertyInfo propertyInfo = currentObjectType.GetSaveableProperty(lastValue, Settings.IncludeInheritedProperties);
+                                            propertyInfo.SetValue(currentObject, LoadObject(i + 1u));
+                                        }
                                     }
                                 }
                                 else if (jsonReader.TokenType == JsonToken.String)
@@ -639,8 +736,16 @@ namespace Heph.Unity.Save
                                         }
                                         else
                                         {
-                                            PropertyInfo propertyInfo = currentObjectType.GetSaveableProperty(lastValue, Settings.IncludeInheritedProperties);
-                                            propertyInfo.SetValue(currentObject, Convert.ChangeType(value, propertyInfo.PropertyType));
+                                            if (lastValue[0] == '(' && lastValue[^1] == ')') // field
+                                            {
+                                                FieldInfo fieldInfo = currentObjectType.GetSaveableField(lastValue[1..^1], Settings.IncludeInheritedFields);
+                                                fieldInfo.SetValue(currentObject, Convert.ChangeType(value, fieldInfo.FieldType));
+                                            }
+                                            else
+                                            {
+                                                PropertyInfo propertyInfo = currentObjectType.GetSaveableProperty(lastValue, Settings.IncludeInheritedProperties);
+                                                propertyInfo.SetValue(currentObject, Convert.ChangeType(value, propertyInfo.PropertyType));
+                                            }
                                         }
                                     }
                                 }
@@ -669,6 +774,7 @@ namespace Heph.Unity.Save
     internal static class GameSaveExtensions
     {
         public static bool IsPrimitive(this PropertyInfo propertyInfo) => propertyInfo.PropertyType.IsPrimitiveOrStringOrDecimal();
+        public static bool IsPrimitive(this FieldInfo fieldInfo) => fieldInfo.FieldType.IsPrimitiveOrStringOrDecimal();
         public static bool IsPrimitiveOrStringOrDecimal(this Type type) => type.IsPrimitive || type == typeof(decimal) || type == typeof(string);
         public static bool IsList(this Type type) => type.GetInterface(nameof(IList)) != null;
         public static IEnumerable<PropertyInfo> GetSaveableProperties(this Type objectType, bool includeInherited)
@@ -679,6 +785,15 @@ namespace Heph.Unity.Save
                 bindingFlags |= BindingFlags.DeclaredOnly;
             }
             return objectType.GetProperties(bindingFlags).Where(pi => pi.GetMethod != null && pi.SetMethod != null && pi.GetCustomAttribute(typeof(ExcludeFromSaveAttribute)) == null);
+        }
+        public static IEnumerable<FieldInfo> GetSaveableFields(this Type objectType, bool includeInherited)
+        {
+            BindingFlags bindingFlags = BindingFlags.Public | BindingFlags.Instance;
+            if (!includeInherited)
+            {
+                bindingFlags |= BindingFlags.DeclaredOnly;
+            }
+            return objectType.GetFields(bindingFlags).Where(fi => !fi.IsInitOnly && fi.GetCustomAttribute(typeof(ExcludeFromSaveAttribute)) == null);
         }
         public static PropertyInfo GetSaveableProperty(this Type objectType, string saveName, bool includeInherited)
         {
@@ -695,6 +810,21 @@ namespace Heph.Unity.Save
             }
             throw new ArgumentException($"The type \"{objectType.FullName}\" does not have a property named \"{saveName}\".");
         }
+        public static FieldInfo GetSaveableField(this Type objectType, string saveName, bool includeInherited)
+        {
+            foreach (FieldInfo fieldInfo in objectType.GetSaveableFields(includeInherited))
+            {
+                if (fieldInfo.GetCustomAttribute<SaveNameAttribute>() is SaveNameAttribute saveNameAttribute && saveNameAttribute.Name == saveName)
+                {
+                    return fieldInfo;
+                }
+                if (fieldInfo.Name == saveName)
+                {
+                    return fieldInfo;
+                }
+            }
+            throw new ArgumentException($"The type \"{objectType.FullName}\" does not have a field named \"{saveName}\".");
+        }
         public static string GetSaveableName(this PropertyInfo propertyInfo)
         {
             if (propertyInfo.GetCustomAttribute<SaveNameAttribute>() is SaveNameAttribute saveName)
@@ -702,6 +832,14 @@ namespace Heph.Unity.Save
                 return saveName.Name;
             }
             return propertyInfo.Name;
+        }
+        public static string GetSaveableName(this FieldInfo fieldInfo)
+        {
+            if (fieldInfo.GetCustomAttribute<SaveNameAttribute>() is SaveNameAttribute saveName)
+            {
+                return saveName.Name;
+            }
+            return fieldInfo.Name;
         }
         public static bool CheckDepth(this GameSaveSettings settings, uint i) => settings.Depth > 0u && settings.Depth <= GameSaveSettings.MaxDepth ? settings.Depth > i : GameSaveSettings.MaxDepth > i;
     }
